@@ -16,4 +16,6 @@ jobs:
         uses: marksman-20/teamwok-action@v1
         with:
           slack_webhook_url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          agent_name: 'Aider-Senior'
+          agent_role: 'refactorer'
 

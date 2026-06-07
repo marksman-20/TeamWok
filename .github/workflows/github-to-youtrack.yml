@@ -20,4 +20,7 @@ jobs:
           youtrack_base_url: ${{ secrets.YOUTRACK_BASE_URL }}
           youtrack_token: ${{ secrets.YOUTRACK_TOKEN }}
           youtrack_project_id: ${{ secrets.YOUTRACK_PROJECT_ID }}
+          agent_name: 'Aider-Senior'
+          agent_role: 'refactorer'
+          scope: 'project'
 
