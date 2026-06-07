@@ -11,92 +11,9 @@ on:
 jobs:
   notify-slack:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Build Slack payload
-        id: payload
-        uses: actions/github-script@v7
+      - name: Dispatch Slack Notification
+        uses: marksman-20/teamwok-action@v1
         with:
-          script: |
-            const ev = context.eventName;
-            const action = context.payload.action;
-            const repo = context.repo.repo;
-            const owner = context.repo.owner;
+          slack_webhook_url: ${{ secrets.SLACK_WEBHOOK_URL }}
 
-            let title, url, body, color, author;
-
-            if (ev === "issues") {
-              const issue = context.payload.issue;
-              title   = `[${repo}] Issue #${issue.number}: ${issue.title}`;
-              url     = issue.html_url;
-              body    = (issue.body || "").substring(0, 300) || "_No description_";
-              author  = issue.user.login;
-              color   = action === "opened"  ? "#36a64f"
-                      : action === "closed"  ? "#cc0000"
-                      : action === "labeled" ? "#f0a500"
-                      :                        "#439FE0";
-            } else if (ev === "pull_request") {
-              const pr = context.payload.pull_request;
-              title   = `[${repo}] PR #${pr.number}: ${pr.title}`;
-              url     = pr.html_url;
-              body    = (pr.body || "").substring(0, 300) || "_No description_";
-              author  = pr.user.login;
-              color   = pr.merged   ? "#6f42c1"
-                      : action === "opened" ? "#36a64f"
-                      : action === "closed" ? "#cc0000"
-                      :                       "#439FE0";
-            } else if (ev === "issue_comment") {
-              const comment = context.payload.comment;
-              const issue   = context.payload.issue;
-              title   = `[${repo}] Comment on #${issue.number}: ${issue.title}`;
-              url     = comment.html_url;
-              body    = (comment.body || "").substring(0, 300);
-              author  = comment.user.login;
-              color   = "#439FE0";
-            }
-
-            const label = context.payload.label ? ` \`${context.payload.label.name}\`` : "";
-            const assignee = context.payload.assignee ? ` → assigned to *${context.payload.assignee.login}*` : "";
-
-            const payload = {
-              attachments: [
-                {
-                  color: color,
-                  blocks: [
-                    {
-                      type: "section",
-                      text: {
-                        type: "mrkdwn",
-                        text: `*<${url}|${title}>*\n*Action:* \`${action}\`${label}${assignee}\n*By:* ${author}`
-                      }
-                    },
-                    {
-                      type: "section",
-                      text: {
-                        type: "mrkdwn",
-                        text: body
-                      }
-                    },
-                    {
-                      type: "context",
-                      elements: [
-                        {
-                          type: "mrkdwn",
-                          text: `<https://github.com/${owner}/${repo}|${owner}/${repo}> · ${new Date().toUTCString()}`
-                        }
-                      ]
-                    }
-                  ]
-                }
-              ]
-            };
-
-            core.setOutput("payload", JSON.stringify(payload));
-
-      - name: Post to Slack
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-        run: |
-          curl -s -X POST "$SLACK_WEBHOOK_URL" \
-            -H "Content-Type: application/json" \
-            -d '${{ steps.payload.outputs.payload }}'
