@@ -1,0 +1,223 @@
+name: GitHub → YouTrack Sync
+
+on:
+  issues:
+    types: [opened, closed, reopened, labeled]
+  pull_request:
+    types: [opened, closed]
+
+# ─── Required Secrets (set in repo Settings → Secrets → Actions) ─────────────
+# YOUTRACK_BASE_URL   e.g. https://yourname.youtrack.cloud
+# YOUTRACK_TOKEN      Permanent token from YouTrack profile → Auth tokens
+# YOUTRACK_PROJECT_ID Short project ID from YouTrack, e.g. "PROJ"
+
+jobs:
+  sync-to-youtrack:
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── 1. Create YouTrack issue when a GitHub issue is opened ──────────────
+      - name: Create YouTrack issue (on GitHub issue opened)
+        if: github.event_name == 'issues' && github.event.action == 'opened'
+        env:
+          YT_BASE:   ${{ secrets.YOUTRACK_BASE_URL }}
+          YT_TOKEN:  ${{ secrets.YOUTRACK_TOKEN }}
+          YT_PROJ:   ${{ secrets.YOUTRACK_PROJECT_ID }}
+        run: |
+          # Resolve YouTrack project ID dynamically if it is shortName
+          if [[ ! "$YT_PROJ" =~ ^[0-9]+-[0-9]+$ ]]; then
+            echo "Resolving YouTrack project shortName '${YT_PROJ}' to database ID..."
+            PROJ_LIST=$(curl -s -H "Authorization: Bearer ${YT_TOKEN}" "${YT_BASE}/api/admin/projects?fields=id,shortName")
+            RESOLVED_ID=$(echo "$PROJ_LIST" | jq -r --arg sName "${YT_PROJ}" '.[] | select(.shortName | ascii_upcase == ($sName | ascii_upcase)) | .id // empty')
+            if [ -z "$RESOLVED_ID" ]; then
+              echo "::error::Failed to resolve YouTrack project shortName: ${YT_PROJ}"
+              exit 1
+            fi
+            echo "Resolved '${YT_PROJ}' to '${RESOLVED_ID}'"
+            YT_PROJ="$RESOLVED_ID"
+          fi
+
+          ISSUE_NUMBER="${{ github.event.issue.number }}"
+          ISSUE_TITLE="${{ github.event.issue.title }}"
+          ISSUE_URL="${{ github.event.issue.html_url }}"
+          REPO="${{ github.repository }}"
+
+          # Safely pass multi-line body via env variable
+          BODY="${{ github.event.issue.body }}"
+          DESCRIPTION="**GitHub Issue:** [${REPO}#${ISSUE_NUMBER}](${ISSUE_URL})
+
+${BODY}"
+
+          PAYLOAD=$(jq -n \
+            --arg summary   "GH#${ISSUE_NUMBER}: ${ISSUE_TITLE}" \
+            --arg desc      "${DESCRIPTION}" \
+            --arg projectId "${YT_PROJ}" \
+            '{
+              summary:     $summary,
+              description: $desc,
+              project: { id: $projectId }
+            }')
+
+          RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+            "${YT_BASE}/api/issues?fields=id,idReadable,summary" \
+            -H "Authorization: Bearer ${YT_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d "${PAYLOAD}")
+
+          HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+          BODY_RESP=$(echo "$RESPONSE" | head -n-1)
+
+          echo "YouTrack response (${HTTP_CODE}): ${BODY_RESP}"
+
+          if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "201" ]; then
+            echo "::error::Failed to create YouTrack issue. HTTP ${HTTP_CODE}"
+            exit 1
+          fi
+
+          YT_ID=$(echo "$BODY_RESP" | jq -r '.idReadable')
+          echo "✅ Created YouTrack issue: ${YT_ID}"
+
+          # Write back a comment on the GitHub issue with the YouTrack link
+          gh issue comment "${ISSUE_NUMBER}" \
+            --body "🔗 YouTrack issue created: [${YT_ID}](${YT_BASE}/issue/${YT_ID})" \
+            --repo "${{ github.repository }}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          YT_BASE:  ${{ secrets.YOUTRACK_BASE_URL }}
+          YT_TOKEN: ${{ secrets.YOUTRACK_TOKEN }}
+          YT_PROJ:  ${{ secrets.YOUTRACK_PROJECT_ID }}
+
+      # ── 2. Add comment on YouTrack when GitHub issue is closed ──────────────
+      - name: Comment on YouTrack issue (on GitHub issue closed)
+        if: github.event_name == 'issues' && github.event.action == 'closed'
+        env:
+          YT_BASE:  ${{ secrets.YOUTRACK_BASE_URL }}
+          YT_TOKEN: ${{ secrets.YOUTRACK_TOKEN }}
+          YT_PROJ:  ${{ secrets.YOUTRACK_PROJECT_ID }}
+        run: |
+          # Resolve YouTrack project ID dynamically if it is shortName
+          if [[ ! "$YT_PROJ" =~ ^[0-9]+-[0-9]+$ ]]; then
+            echo "Resolving YouTrack project shortName '${YT_PROJ}' to database ID..."
+            PROJ_LIST=$(curl -s -H "Authorization: Bearer ${YT_TOKEN}" "${YT_BASE}/api/admin/projects?fields=id,shortName")
+            RESOLVED_ID=$(echo "$PROJ_LIST" | jq -r --arg sName "${YT_PROJ}" '.[] | select(.shortName | ascii_upcase == ($sName | ascii_upcase)) | .id // empty')
+            if [ -z "$RESOLVED_ID" ]; then
+              echo "::error::Failed to resolve YouTrack project shortName: ${YT_PROJ}"
+              exit 1
+            fi
+            echo "Resolved '${YT_PROJ}' to '${RESOLVED_ID}'"
+            YT_PROJ="$RESOLVED_ID"
+          fi
+
+          ISSUE_NUMBER="${{ github.event.issue.number }}"
+          ISSUE_URL="${{ github.event.issue.html_url }}"
+
+          # Find the YouTrack issue by searching for GitHub issue number in summary
+          SEARCH=$(curl -s \
+            "${YT_BASE}/api/issues?query=project:+${YT_PROJ}+%23${ISSUE_NUMBER}&fields=id,idReadable,summary" \
+            -H "Authorization: Bearer ${YT_TOKEN}")
+
+          YT_ISSUE_ID=$(echo "$SEARCH" | jq -r '.[0].id // empty')
+
+          if [ -z "$YT_ISSUE_ID" ]; then
+            echo "::warning::No matching YouTrack issue found for GH#${ISSUE_NUMBER}"
+            exit 0
+          fi
+
+          curl -s -X POST \
+            "${YT_BASE}/api/issues/${YT_ISSUE_ID}/comments" \
+            -H "Authorization: Bearer ${YT_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d "{\"text\": \"✅ GitHub issue [#${ISSUE_NUMBER}](${ISSUE_URL}) was **closed**.\"}"
+
+          echo "✅ Commented on YouTrack issue ${YT_ISSUE_ID}"
+
+      # ── 3. Add label as YouTrack tag when a GitHub issue is labeled ─────────
+      - name: Sync label as YouTrack tag (on GitHub issue labeled)
+        if: github.event_name == 'issues' && github.event.action == 'labeled'
+        env:
+          YT_BASE:  ${{ secrets.YOUTRACK_BASE_URL }}
+          YT_TOKEN: ${{ secrets.YOUTRACK_TOKEN }}
+          YT_PROJ:  ${{ secrets.YOUTRACK_PROJECT_ID }}
+        run: |
+          # Resolve YouTrack project ID dynamically if it is shortName
+          if [[ ! "$YT_PROJ" =~ ^[0-9]+-[0-9]+$ ]]; then
+            echo "Resolving YouTrack project shortName '${YT_PROJ}' to database ID..."
+            PROJ_LIST=$(curl -s -H "Authorization: Bearer ${YT_TOKEN}" "${YT_BASE}/api/admin/projects?fields=id,shortName")
+            RESOLVED_ID=$(echo "$PROJ_LIST" | jq -r --arg sName "${YT_PROJ}" '.[] | select(.shortName | ascii_upcase == ($sName | ascii_upcase)) | .id // empty')
+            if [ -z "$RESOLVED_ID" ]; then
+              echo "::error::Failed to resolve YouTrack project shortName: ${YT_PROJ}"
+              exit 1
+            fi
+            echo "Resolved '${YT_PROJ}' to '${RESOLVED_ID}'"
+            YT_PROJ="$RESOLVED_ID"
+          fi
+
+          ISSUE_NUMBER="${{ github.event.issue.number }}"
+          LABEL_NAME="${{ github.event.label.name }}"
+
+          SEARCH=$(curl -s \
+            "${YT_BASE}/api/issues?query=project:+${YT_PROJ}+GH%23${ISSUE_NUMBER}&fields=id,idReadable" \
+            -H "Authorization: Bearer ${YT_TOKEN}")
+
+          YT_ISSUE_ID=$(echo "$SEARCH" | jq -r '.[0].id // empty')
+
+          if [ -z "$YT_ISSUE_ID" ]; then
+            echo "::warning::No matching YouTrack issue for GH#${ISSUE_NUMBER}"
+            exit 0
+          fi
+
+          # Apply tag via command
+          curl -s -X POST \
+            "${YT_BASE}/api/issues/${YT_ISSUE_ID}/commands" \
+            -H "Authorization: Bearer ${YT_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d "{\"query\": \"tag ${LABEL_NAME}\"}"
+
+          echo "✅ Tagged YouTrack issue with: ${LABEL_NAME}"
+
+      # ── 4. Link PR to YouTrack issue when PR mentions an issue number ────────
+      - name: Comment PR link on YouTrack (on PR opened)
+        if: github.event_name == 'pull_request' && github.event.action == 'opened'
+        env:
+          YT_BASE:  ${{ secrets.YOUTRACK_BASE_URL }}
+          YT_TOKEN: ${{ secrets.YOUTRACK_TOKEN }}
+          YT_PROJ:  ${{ secrets.YOUTRACK_PROJECT_ID }}
+        run: |
+          # Resolve YouTrack project ID dynamically if it is shortName
+          if [[ ! "$YT_PROJ" =~ ^[0-9]+-[0-9]+$ ]]; then
+            echo "Resolving YouTrack project shortName '${YT_PROJ}' to database ID..."
+            PROJ_LIST=$(curl -s -H "Authorization: Bearer ${YT_TOKEN}" "${YT_BASE}/api/admin/projects?fields=id,shortName")
+            RESOLVED_ID=$(echo "$PROJ_LIST" | jq -r --arg sName "${YT_PROJ}" '.[] | select(.shortName | ascii_upcase == ($sName | ascii_upcase)) | .id // empty')
+            if [ -z "$RESOLVED_ID" ]; then
+              echo "::error::Failed to resolve YouTrack project shortName: ${YT_PROJ}"
+              exit 1
+            fi
+            echo "Resolved '${YT_PROJ}' to '${RESOLVED_ID}'"
+            YT_PROJ="$RESOLVED_ID"
+          fi
+
+          PR_TITLE="${{ github.event.pull_request.title }}"
+          PR_URL="${{ github.event.pull_request.html_url }}"
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+
+          # Extract issue numbers referenced in PR title or body (e.g. "Fixes #42")
+          PR_BODY="${{ github.event.pull_request.body }}"
+          ISSUE_REFS=$(echo "${PR_TITLE} ${PR_BODY}" | grep -oP '(?<=#)\d+' | head -5)
+
+          for ISSUE_NUMBER in $ISSUE_REFS; do
+            SEARCH=$(curl -s \
+              "${YT_BASE}/api/issues?query=project:+${YT_PROJ}+GH%23${ISSUE_NUMBER}&fields=id,idReadable" \
+              -H "Authorization: Bearer ${YT_TOKEN}")
+
+            YT_ISSUE_ID=$(echo "$SEARCH" | jq -r '.[0].id // empty')
+
+            if [ -n "$YT_ISSUE_ID" ]; then
+              curl -s -X POST \
+                "${YT_BASE}/api/issues/${YT_ISSUE_ID}/comments" \
+                -H "Authorization: Bearer ${YT_TOKEN}" \
+                -H "Content-Type: application/json" \
+                -d "{\"text\": \"🔀 PR #${PR_NUMBER} opened: [${PR_TITLE}](${PR_URL})\"}"
+
+              echo "✅ Linked PR#${PR_NUMBER} to YouTrack issue ${YT_ISSUE_ID}"
+            fi
+          done

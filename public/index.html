@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TeamWok Bridge Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&family=Outfit:wght@300;400;500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="glass-bg"></div>
+  
+  <div class="container">
+    <!-- Header -->
+    <header class="dashboard-header">
+      <div class="header-logo">
+        <span class="logo-icon">⚡</span>
+        <h1>TeamWok <span class="gradient-text">Bridge</span></h1>
+      </div>
+      <div class="header-status">
+        <span class="pulse-dot green"></span>
+        <span class="status-label">Local Host 127.0.0.1</span>
+      </div>
+    </header>
+
+    <!-- Main Grid -->
+    <main class="dashboard-grid">
+      <!-- GitHub Card -->
+      <section class="card glass-card" id="card-github">
+        <div class="card-header">
+          <div class="card-title-wrap">
+            <span class="card-icon">🐙</span>
+            <h2>GitHub Repository</h2>
+          </div>
+          <span class="status-badge" id="github-badge">Unresolved</span>
+        </div>
+        <div class="card-body">
+          <div class="form-group">
+            <label for="github-repo-input">Repository Path</label>
+            <input type="text" id="github-repo-input" placeholder="e.g., owner/repo">
+          </div>
+          <div class="button-group-vertical">
+            <button id="btn-save-github" class="btn btn-secondary">Save Preference</button>
+            <button id="btn-create-repo" class="btn btn-primary">⚡ Init Git & Create GitHub Repo</button>
+            <button id="btn-sync-secrets" class="btn btn-accent">🔗 Push Secrets to GitHub</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Slack Card -->
+      <section class="card glass-card" id="card-slack">
+        <div class="card-header">
+          <div class="card-title-wrap">
+            <span class="card-icon">💬</span>
+            <h2>Slack Integration</h2>
+          </div>
+          <span class="status-badge" id="slack-badge">Disconnected</span>
+        </div>
+        <div class="card-body">
+          <div class="status-list">
+            <div class="status-item">
+              <span class="status-item-label">App Config Scope</span>
+              <span class="status-item-val green-text">✓ Active</span>
+            </div>
+            <div class="status-item">
+              <span class="status-item-label">Bot Token (xoxb)</span>
+              <span class="status-item-val" id="slack-bot-val">-</span>
+            </div>
+            <div class="status-item">
+              <span class="status-item-label">Incoming Webhook</span>
+              <span class="status-item-val" id="slack-webhook-val">-</span>
+            </div>
+          </div>
+          <button id="btn-connect-slack" class="btn btn-slack btn-primary">Connect Slack Bot</button>
+        </div>
+      </section>
+
+      <!-- YouTrack Card -->
+      <section class="card glass-card" id="card-youtrack">
+        <div class="card-header">
+          <div class="card-title-wrap">
+            <span class="card-icon">🎯</span>
+            <h2>YouTrack Settings</h2>
+          </div>
+          <span class="status-badge" id="youtrack-badge">Disconnected</span>
+        </div>
+        <div class="card-body">
+          <div class="form-group">
+            <label for="yt-url-input">Base URL</label>
+            <input type="text" id="yt-url-input" placeholder="https://yourdomain.youtrack.cloud/">
+          </div>
+          <div class="form-group">
+            <label for="yt-project-input">Project ShortName / ID</label>
+            <input type="text" id="yt-project-input" placeholder="e.g. TCD">
+          </div>
+          <button id="btn-save-youtrack" class="btn btn-secondary">Save Preferences</button>
+        </div>
+      </section>
+
+      <!-- Polling Control Card -->
+      <section class="card glass-card" id="card-poller">
+        <div class="card-header">
+          <div class="card-title-wrap">
+            <span class="card-icon">🔄</span>
+            <h2>Aider Poller Daemon</h2>
+          </div>
+          <span class="status-badge" id="poller-badge">Stopped</span>
+        </div>
+        <div class="card-body">
+          <div class="toggle-group">
+            <span class="toggle-label">Enable GitHub Polling</span>
+            <label class="switch">
+              <input type="checkbox" id="poller-toggle">
+              <span class="slider round"></span>
+            </label>
+          </div>
+          <div class="form-group">
+            <label for="poller-interval-input">Interval (Seconds)</label>
+            <input type="number" id="poller-interval-input" min="10" max="3600" value="30">
+          </div>
+          <div class="button-row">
+            <button id="btn-start-worker" class="btn btn-sm btn-secondary">Start</button>
+            <button id="btn-stop-worker" class="btn btn-sm btn-danger">Stop</button>
+            <button id="btn-restart-worker" class="btn btn-sm btn-accent">Restart</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Raise Issue Card -->
+      <section class="card glass-card" id="card-raise-issue">
+        <div class="card-header">
+          <div class="card-title-wrap">
+            <span class="card-icon">✏️</span>
+            <h2>Raise New Issue</h2>
+          </div>
+        </div>
+        <div class="card-body">
+          <form id="issue-form">
+            <div class="form-group">
+              <label for="issue-title">Issue Title</label>
+              <input type="text" id="issue-title" placeholder="What needs to be fixed?" required>
+            </div>
+            <div class="form-group">
+              <label for="issue-body">Issue Description</label>
+              <textarea id="issue-body" rows="3" placeholder="Describe the feature or bug..." required></textarea>
+            </div>
+            <div class="checkbox-group">
+              <label class="checkbox-label">
+                <input type="checkbox" id="issue-label-aider" checked>
+                Apply <code>run-aider</code> label (starts Aider locally)
+              </label>
+            </div>
+            <button type="submit" class="btn btn-accent btn-block">🚀 Submit Issue</button>
+          </form>
+        </div>
+      </section>
+    </main>
+
+    <!-- Terminal Section -->
+    <section class="console-section glass-card">
+      <div class="console-header">
+        <div class="console-title-wrap">
+          <span class="console-dot red"></span>
+          <span class="console-dot yellow"></span>
+          <span class="console-dot green"></span>
+          <span class="console-title">Local Daemon Stream Output (worker.js)</span>
+        </div>
+        <button id="btn-clear-console" class="btn btn-sm btn-secondary">Clear Console</button>
+      </div>
+      <div class="console-body">
+        <pre id="console-stream">Initializing logs connection via SSE...</pre>
+      </div>
+    </section>
+  </div>
+
+  <div id="toast" class="toast">Successfully Saved!</div>
+  
+  <script src="app.js"></script>
+</body>
+</html>
