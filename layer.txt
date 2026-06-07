@@ -1,0 +1,60 @@
+TeamWok Integration Bridge Walkthrough
+We have successfully built and verified the TeamWok Integration Bridge API & Dashboard! The application is fully responsive, binds securely to 127.0.0.1:3000, and operates with strict credentials isolation.
+
+What Was Done
+We developed a Node.js + Express backend service along with a premium glassmorphic dark-mode frontend control panel.
+
+1. Security & Configuration Separation
+No plaintext secrets committed: All authentication credentials (such as tokens and webhooks) are saved dynamically into a local .env file.
+Git Safety (.gitignore): Placed a .gitignore check at boot that halts execution if .env or config.json are not ignored.
+Localhost Guard: The server binds to 127.0.0.1:3000 and enforces a localhostOnly middleware guard to block any requests originating outside loopback interfaces.
+2. Multi-Process Architecture (server.js + worker.js)
+Separated the poller daemon into worker.js, spawned via Node's fork() method. This protects the Express webapp from crashes and allows independent lifecycles.
+Configured dynamic IPC command bindings (start/stop/restart) to manage the poller process directly from the UI.
+Implemented Server-Sent Events (SSE) log streaming via /api/logs/stream. Standard output and error streams from the worker are piped instantly to the browser client.
+3. Workflow Integrations
+YouTrack Dynamic ID Resolution: Updated /Users/manaspokley/PORTFOLIO/Projects/TeamWok/github-to-youtrack.yml and the local Express YouTrack client to automatically lookup project shortNames (like TCD) and map them to database internal IDs (like 0-2).
+Slack App Setup: Programmatically registered the Slack app TeamWok Bridge Bot in your workspace.
+GitHub Secrets Autopush: Built an API calling the local gh CLI to set all repository secrets (SLACK_WEBHOOK_URL, YOUTRACK_BASE_URL, YOUTRACK_TOKEN, YOUTRACK_PROJECT_ID) directly to your remote repository in one click.
+Code Base Reference
+server.js
+ — The primary Express entry point.
+worker.js
+ — Background poller for run-aider labels.
+setup.sh
+ — Setup script to initialize git, install packages, and boot the server.
+github-to-youtrack.yml
+ — Updated GitHub Action with dynamic lookup.
+Verification & Testing Results
+Server Boot & Lockout: Confirmed that the server binds correctly to 127.0.0.1:3000. Hitting the configuration endpoint locally succeeded:
+json
+
+{
+  "config": {
+    "github_repo": "marksman-20/TeamWok",
+    "youtrack_base_url": "https://mpokley.youtrack.cloud/",
+    "youtrack_project_id": "TCD",
+    "polling_enabled": false,
+    "polling_interval": 30
+  },
+  "status": {
+    "hasSlackBotToken": false,
+    "hasSlackWebhookUrl": false,
+    "hasYouTrackToken": true,
+    "hasGithubToken": true,
+    "workerRunning": false
+  }
+}
+Poller Spawning & SSE Stream: Started the background poller worker process and successfully consumed the initial log stream from the SSE stream:
+data: {"logs":"[6:02:43 PM] [System] Spawning poller worker process...\n[6:02:43 PM] [Worker] Starting polling loop. Interval: 30 seconds.\n"}
+Quick Start Instructions
+To access the dashboard and finalize your Slack connection:
+
+Ensure the server is running: The setup script has already launched the server. You can check its background output or launch it manually at any time by running:
+bash
+
+cd /Users/manaspokley/PORTFOLIO/Projects/TeamWok && ./setup.sh
+Open the Dashboard: Go to http://127.0.0.1:3000 in your web browser.
+Connect Slack: Click the purple Connect Slack Bot button. It will open Slack, prompt you to install TeamWok Bridge Bot in your workspace, and automatically redirect back to save the generated SLACK_BOT_TOKEN and SLACK_WEBHOOK_URL in your .env.
+Push GitHub Secrets: Click the accent Push Secrets to GitHub button. This automatically writes your local secrets onto your GitHub repository Action secrets using your logged-in GitHub CLI.
+Poller Daemon: Toggle the Enable GitHub Polling switch on the dashboard to start the local Aider polling worker.

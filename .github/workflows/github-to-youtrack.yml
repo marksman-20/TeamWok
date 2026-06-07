@@ -9,6 +9,9 @@ on:
 jobs:
   sync-to-youtrack:
     runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: write
     steps:
       - name: Dispatch YouTrack Sync
         uses: marksman-20/teamwok-action@v1

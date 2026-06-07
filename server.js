@@ -465,7 +465,8 @@ app.post('/api/gh/issues', localhostOnly, async (req, res) => {
 
 // YouTrack sync function
 async function syncIssueToYouTrack(issue, config) {
-  const ytBase = config.youtrack_base_url;
+  const ytBaseRaw = config.youtrack_base_url || "";
+  const ytBase = ytBaseRaw.replace(/\/+$/, '');
   const token = process.env.YOUTRACK_TOKEN;
   let ytProj = config.youtrack_project_id;
 
