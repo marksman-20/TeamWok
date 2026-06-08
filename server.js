@@ -2,6 +2,7 @@ import express from 'express';
 import dotenv from 'dotenv';
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 import { fork, execSync } from 'child_process';
 
 // Load environment variables
@@ -211,7 +212,12 @@ app.get('/api/config', localhostOnly, (req, res) => {
         return false;
       }
     })(),
-    workerRunning: !!workerProcess
+    workerRunning: !!workerProcess,
+    // Jira status
+    hasJiraWebhookUrl: !!process.env.JIRA_WEBHOOK_URL,
+    hasJiraWebhookSecret: !!process.env.JIRA_WEBHOOK_SECRET,
+    hasJiraBaseUrl: !!process.env.JIRA_BASE_URL,
+    hasJiraApiToken: !!process.env.JIRA_API_TOKEN,
   };
 
   res.json({ config, status });
@@ -287,6 +293,39 @@ app.post('/api/gh/secrets', localhostOnly, async (req, res) => {
     if (ytProj) {
       systemLog('Setting GitHub secret: YOUTRACK_PROJECT_ID...');
       execSync(`gh secret set YOUTRACK_PROJECT_ID --body "${ytProj}" --repo "${repo}"`);
+    }
+
+    // Jira secrets
+    const jiraBaseUrl = process.env.JIRA_BASE_URL;
+    const jiraEmail = process.env.JIRA_USER_EMAIL;
+    const jiraToken = process.env.JIRA_API_TOKEN;
+    const jiraProjKey = process.env.JIRA_PROJECT_KEY;
+    const jiraWebhookUrl = process.env.JIRA_WEBHOOK_URL;
+    const jiraWebhookSecret = process.env.JIRA_WEBHOOK_SECRET;
+
+    if (jiraBaseUrl) {
+      systemLog('Setting GitHub secret: JIRA_BASE_URL...');
+      execSync(`gh secret set JIRA_BASE_URL --body "${jiraBaseUrl}" --repo "${repo}"`);
+    }
+    if (jiraEmail) {
+      systemLog('Setting GitHub secret: JIRA_USER_EMAIL...');
+      execSync(`gh secret set JIRA_USER_EMAIL --body "${jiraEmail}" --repo "${repo}"`);
+    }
+    if (jiraToken) {
+      systemLog('Setting GitHub secret: JIRA_API_TOKEN...');
+      execSync(`gh secret set JIRA_API_TOKEN --body "${jiraToken}" --repo "${repo}"`);
+    }
+    if (jiraProjKey) {
+      systemLog('Setting GitHub secret: JIRA_PROJECT_KEY...');
+      execSync(`gh secret set JIRA_PROJECT_KEY --body "${jiraProjKey}" --repo "${repo}"`);
+    }
+    if (jiraWebhookUrl) {
+      systemLog('Setting GitHub secret: JIRA_WEBHOOK_URL...');
+      execSync(`gh secret set JIRA_WEBHOOK_URL --body "${jiraWebhookUrl}" --repo "${repo}"`);
+    }
+    if (jiraWebhookSecret) {
+      systemLog('Setting GitHub secret: JIRA_WEBHOOK_SECRET...');
+      execSync(`gh secret set JIRA_WEBHOOK_SECRET --body "${jiraWebhookSecret}" --repo "${repo}"`);
     }
 
     systemLog('All secrets synchronized successfully with GitHub repository!');
@@ -451,10 +490,22 @@ app.post('/api/gh/issues', localhostOnly, async (req, res) => {
 
     systemLog(`GitHub issue #${data.number} created successfully.`);
 
-    // Trigger local YouTrack sync immediately for user convenience
-    if (config.youtrack_base_url && process.env.YOUTRACK_TOKEN) {
-      syncIssueToYouTrack(data, config);
-    }
+    // Trigger local syncs in parallel — YouTrack + Jira
+    // allSettled: if one fails the other still completes
+    Promise.allSettled([
+      (config.youtrack_base_url && process.env.YOUTRACK_TOKEN)
+        ? syncIssueToYouTrack(data, config)
+        : Promise.resolve(),
+      (process.env.JIRA_BASE_URL && process.env.JIRA_API_TOKEN)
+        ? syncIssueToJira(data, config)
+        : Promise.resolve(),
+    ]).then(results => {
+      results.forEach((r, i) => {
+        if (r.status === 'rejected') {
+          systemLog(`Sync ${i === 0 ? 'YouTrack' : 'Jira'} failed: ${r.reason?.message}`);
+        }
+      });
+    });
 
     res.json({ success: true, issue: data });
   } catch (err) {
@@ -553,6 +604,229 @@ async function syncIssueToYouTrack(issue, config) {
   }
 }
 
+// ── JIRA SYNC ──
+
+/**
+ * Sync a GitHub issue to Jira Cloud via REST API v3.
+ * Mirrors the YouTrack sync pattern exactly.
+ */
+async function syncIssueToJira(issue, config) {
+  const jiraBaseUrl = (process.env.JIRA_BASE_URL || '').replace(/\/+$/, '');
+  const jiraEmail = process.env.JIRA_USER_EMAIL;
+  const jiraApiToken = process.env.JIRA_API_TOKEN;
+  const jiraProjectKey = process.env.JIRA_PROJECT_KEY || config.jira_project_key;
+
+  if (!jiraBaseUrl || !jiraEmail || !jiraApiToken || !jiraProjectKey) {
+    systemLog('Jira credentials incomplete — skipping Jira sync. Set JIRA_BASE_URL, JIRA_USER_EMAIL, JIRA_API_TOKEN, JIRA_PROJECT_KEY.');
+    return;
+  }
+
+  const agentName = config.agent_name || 'Antigravity';
+  const agentRole = config.agent_role || 'lead';
+
+  try {
+    systemLog(`Syncing GitHub Issue #${issue.number} to Jira (${jiraProjectKey})...`);
+
+    const auth = Buffer.from(`${jiraEmail}:${jiraApiToken}`).toString('base64');
+
+    const payload = {
+      fields: {
+        project: { key: jiraProjectKey },
+        summary: `GH#${issue.number}: ${issue.title}`,
+        description: {
+          type: 'doc',
+          version: 1,
+          content: [{
+            type: 'paragraph',
+            content: [{
+              type: 'text',
+              text: [
+                `GitHub Issue: ${issue.html_url}`,
+                `Agent: ${agentName} (${agentRole})`,
+                `Scope: issue`,
+                '',
+                issue.body || 'No description provided.'
+              ].join('\n')
+            }]
+          }]
+        },
+        issuetype: { name: 'Task' },
+        labels: ['teamwok', `agent-${agentName.toLowerCase().replace(/[^a-z0-9]/g, '-')}`]
+      }
+    };
+
+    const jiraRes = await fetch(`${jiraBaseUrl}/rest/api/3/issue`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Basic ${auth}`,
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+      },
+      body: JSON.stringify(payload)
+    });
+
+    const jiraData = await jiraRes.json();
+    if (!jiraRes.ok) {
+      systemLog(`Jira issue creation failed: ${JSON.stringify(jiraData.errors || jiraData)}`);
+      return;
+    }
+
+    const jiraKey = jiraData.key;
+    systemLog(`Jira issue created: ${jiraKey}`);
+
+    // Post Jira key back as GitHub comment
+    let ghToken = process.env.GITHUB_TOKEN;
+    if (!ghToken) {
+      ghToken = execSync('gh auth token').toString().trim();
+    }
+
+    await fetch(`https://api.github.com/repos/${config.github_repo}/issues/${issue.number}/comments`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `token ${ghToken}`,
+        'Content-Type': 'application/json',
+        'Accept': 'application/vnd.github.v3+json',
+        'User-Agent': 'TeamWok-Bridge-API'
+      },
+      body: JSON.stringify({
+        body: `🔗 Jira issue created: [${jiraKey}](${jiraBaseUrl}/browse/${jiraKey})`
+      })
+    });
+
+    systemLog(`Jira link comment posted on GH#${issue.number}.`);
+  } catch (err) {
+    systemLog(`Jira sync exception: ${err.message}`);
+    throw err;
+  }
+}
+
+// ── JIRA CONFIG ENDPOINT ──
+
+// POST /api/jira/config — store Jira credentials
+app.post('/api/jira/config', localhostOnly, (req, res) => {
+  const { jira_webhook_url, jira_webhook_secret, jira_project_key, jira_base_url, jira_user_email, jira_api_token } = req.body;
+
+  const secrets = {};
+  if (jira_webhook_url)   secrets.JIRA_WEBHOOK_URL    = jira_webhook_url;
+  if (jira_webhook_secret) secrets.JIRA_WEBHOOK_SECRET = jira_webhook_secret;
+  if (jira_project_key)  secrets.JIRA_PROJECT_KEY   = jira_project_key;
+  if (jira_base_url)     secrets.JIRA_BASE_URL       = jira_base_url;
+  if (jira_user_email)   secrets.JIRA_USER_EMAIL     = jira_user_email;
+  if (jira_api_token)    secrets.JIRA_API_TOKEN      = jira_api_token;
+
+  if (Object.keys(secrets).length === 0) {
+    return res.status(400).json({ error: 'No Jira fields provided.' });
+  }
+
+  updateEnvSecrets(secrets);
+
+  // Also persist project key to config.json
+  if (jira_project_key) {
+    let config = {};
+    if (fs.existsSync(CONFIG_PATH)) {
+      config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+    }
+    config.jira_project_key = jira_project_key;
+    fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2), 'utf8');
+  }
+
+  systemLog('Jira configuration saved.');
+  res.json({ ok: true });
+});
+
+// ── JIRA WEBHOOK RECEIVER ──
+
+const KNOWN_AGENT_NAMES = ['Antigravity', 'OpenCode-A', 'OpenCode-B', 'Aider-Senior', 'Demo-Agent'];
+
+/**
+ * Verify Jira webhook signature.
+ * Jira can send: x-hub-signature-256, x-atlassian-token, or a shared secret header.
+ */
+function verifyJiraSignature(req) {
+  const secret = process.env.JIRA_WEBHOOK_SECRET;
+  if (!secret) return true; // no secret configured — accept all (dev mode)
+
+  const sig256 = req.headers['x-hub-signature-256'];
+  const atlassianToken = req.headers['x-atlassian-token'];
+  const sharedSecret = req.headers['x-jira-webhook-secret'];
+
+  if (sharedSecret) {
+    return sharedSecret === secret;
+  }
+  if (atlassianToken) {
+    return atlassianToken === secret;
+  }
+  if (sig256) {
+    const body = JSON.stringify(req.body);
+    const expected = 'sha256=' + crypto.createHmac('sha256', secret).update(body).digest('hex');
+    return crypto.timingSafeEqual(Buffer.from(sig256), Buffer.from(expected));
+  }
+  return false;
+}
+
+app.post('/api/jira/webhook', express.json(), async (req, res) => {
+  if (!verifyJiraSignature(req)) {
+    systemLog(`[Security] Jira webhook signature mismatch — request rejected.`);
+    return res.status(401).json({ error: 'Invalid webhook signature' });
+  }
+
+  const event = req.body;
+  const eventType = event.webhookEvent || event.event_type || '';
+  systemLog(`Jira webhook received: ${eventType}`);
+
+  // Extract Jira issue summary to find matching GitHub issue number
+  const summary = event.issue?.fields?.summary || '';
+  const ghMatch = summary.match(/^GH#(\d+):/);
+  const ghIssueNumber = ghMatch ? ghMatch[1] : null;
+
+  let config = {};
+  if (fs.existsSync(CONFIG_PATH)) {
+    config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+  }
+
+  if (ghIssueNumber && config.github_repo) {
+    let ghToken = process.env.GITHUB_TOKEN;
+    if (!ghToken) {
+      try { ghToken = execSync('gh auth token').toString().trim(); } catch(e) { ghToken = null; }
+    }
+
+    let commentBody = null;
+
+    if (eventType === 'jira:issue_updated') {
+      const updatedField = event.changelog?.items?.[0]?.field || 'unknown field';
+      const newValue = event.changelog?.items?.[0]?.toString || '';
+      commentBody = `🔄 **Jira update:** Field \`${updatedField}\` changed to \`${newValue}\` on ${summary}`;
+    } else if (eventType === 'jira:issue_deleted') {
+      commentBody = `⚠️ **Jira issue deleted:** ${summary} — Jira tracking removed (GitHub issue preserved).`;
+    } else if (eventType === 'comment_created') {
+      const author = event.comment?.author?.displayName || 'Unknown';
+      // Avoid echo loop — skip if author is a known agent
+      const isAgent = KNOWN_AGENT_NAMES.some(a => author.toLowerCase().includes(a.toLowerCase()));
+      if (!isAgent) {
+        const commentText = event.comment?.body || '';
+        commentBody = `💬 **Jira comment** (from ${author}): ${commentText}`;
+      }
+    }
+
+    if (commentBody && ghToken) {
+      await fetch(`https://api.github.com/repos/${config.github_repo}/issues/${ghIssueNumber}/comments`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `token ${ghToken}`,
+          'Content-Type': 'application/json',
+          'Accept': 'application/vnd.github.v3+json',
+          'User-Agent': 'TeamWok-Bridge-API'
+        },
+        body: JSON.stringify({ body: commentBody })
+      }).catch(e => systemLog(`Failed to post Jira→GH comment: ${e.message}`));
+
+      systemLog(`Jira→GH comment posted on GH#${ghIssueNumber}`);
+    }
+  }
+
+  res.json({ ok: true });
+});
+
 // Manually trigger YouTrack sync
 app.post('/api/youtrack/sync/:issueNumber', localhostOnly, async (req, res) => {
   const { issueNumber } = req.params;
@@ -628,6 +902,16 @@ app.listen(PORT, BIND_IP, () => {
   console.log(`🚀 TeamWok Bridge API running at http://${BIND_IP}:${PORT}`);
   console.log(`🔒 Localhost Security: Bound to 127.0.0.1`);
   console.log(`==================================================\n`);
+
+  // Jira startup warnings
+  const jiraRequired = ['JIRA_BASE_URL', 'JIRA_USER_EMAIL', 'JIRA_API_TOKEN', 'JIRA_PROJECT_KEY'];
+  const jiraMissing = jiraRequired.filter(k => !process.env[k]);
+  if (jiraMissing.length > 0) {
+    console.warn(`⚠️  [Jira] Missing env vars: ${jiraMissing.join(', ')}`);
+    console.warn(`   Jira mirroring will be skipped until configured via POST /api/jira/config`);
+  } else {
+    console.log(`✅ Jira mirroring configured → ${process.env.JIRA_BASE_URL} (${process.env.JIRA_PROJECT_KEY})`);
+  }
 
   // Start worker if config calls for it
   let config = {};
