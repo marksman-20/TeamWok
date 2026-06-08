@@ -70,7 +70,7 @@ jobs:
               }
             }')
 
-          AUTH=$(echo -n "${JIRA_USER_EMAIL}:${JIRA_API_TOKEN}" | base64)
+          AUTH=$(echo -n "${JIRA_USER_EMAIL}:${JIRA_API_TOKEN}" | base64 | tr -d '\n')
           RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
             "${JIRA_BASE_URL}/rest/api/3/issue" \
             -H "Authorization: Basic ${AUTH}" \
@@ -104,7 +104,7 @@ jobs:
           set -euo pipefail
 
           ISSUE_NUMBER="${{ github.event.issue.number }}"
-          AUTH=$(echo -n "${JIRA_USER_EMAIL}:${JIRA_API_TOKEN}" | base64)
+          AUTH=$(echo -n "${JIRA_USER_EMAIL}:${JIRA_API_TOKEN}" | base64 | tr -d '\n')
 
           # Search for Jira issue by GH# prefix in summary
           SEARCH_RESP=$(curl -s \
@@ -156,7 +156,7 @@ jobs:
 
           ISSUE_NUMBER="${{ github.event.issue.number }}"
           LABEL_NAME="${{ github.event.label.name }}"
-          AUTH=$(echo -n "${JIRA_USER_EMAIL}:${JIRA_API_TOKEN}" | base64)
+          AUTH=$(echo -n "${JIRA_USER_EMAIL}:${JIRA_API_TOKEN}" | base64 | tr -d '\n')
 
           SEARCH_RESP=$(curl -s \
             "${JIRA_BASE_URL}/rest/api/3/issue/picker?query=GH%23${ISSUE_NUMBER}" \
