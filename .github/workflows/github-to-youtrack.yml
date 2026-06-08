@@ -1,4 +1,4 @@
-name: GitHub → YouTrack Sync
+name: GitHub → YouTrack + Jira Sync
 
 on:
   issues:
@@ -20,7 +20,161 @@ jobs:
           youtrack_base_url: ${{ secrets.YOUTRACK_BASE_URL }}
           youtrack_token: ${{ secrets.YOUTRACK_TOKEN }}
           youtrack_project_id: ${{ secrets.YOUTRACK_PROJECT_ID }}
-          agent_name: 'Aider-Senior'
-          agent_role: 'refactorer'
+          agent_name: 'Antigravity'
+          agent_role: 'lead'
           scope: 'project'
 
+  sync-to-jira:
+    runs-on: ubuntu-latest
+    needs: sync-to-youtrack   # run after YouTrack, not instead of it
+    permissions:
+      issues: write
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - name: Create Jira issue (on GitHub issue opened)
+        if: github.event_name == 'issues' && github.event.action == 'opened'
+        env:
+          JIRA_BASE_URL:      ${{ secrets.JIRA_BASE_URL }}
+          JIRA_USER_EMAIL:    ${{ secrets.JIRA_USER_EMAIL }}
+          JIRA_API_TOKEN:     ${{ secrets.JIRA_API_TOKEN }}
+          JIRA_PROJECT_KEY:   ${{ secrets.JIRA_PROJECT_KEY }}
+        run: |
+          set -euo pipefail
+
+          ISSUE_NUMBER="${{ github.event.issue.number }}"
+          ISSUE_TITLE="${{ github.event.issue.title }}"
+          ISSUE_URL="${{ github.event.issue.html_url }}"
+          AGENT_NAME="${{ github.event.issue.user.login }}"
+
+          PAYLOAD=$(jq -n \
+            --arg summary  "GH#${ISSUE_NUMBER}: ${ISSUE_TITLE}" \
+            --arg ghurl    "${ISSUE_URL}" \
+            --arg projkey  "${JIRA_PROJECT_KEY}" \
+            --arg agent    "${AGENT_NAME}" \
+            '{
+              fields: {
+                project: { key: $projkey },
+                summary: $summary,
+                description: {
+                  type: "doc", version: 1,
+                  content: [{ type: "paragraph", content: [{
+                    type: "text",
+                    text: ("GitHub: " + $ghurl + "\nAgent: " + $agent + "\nLabel: teamwok")
+                  }]}]
+                },
+                issuetype: { name: "Task" },
+                labels: ["teamwok"]
+              }
+            }')
+
+          AUTH=$(echo -n "${JIRA_USER_EMAIL}:${JIRA_API_TOKEN}" | base64)
+          RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+            "${JIRA_BASE_URL}/rest/api/3/issue" \
+            -H "Authorization: Basic ${AUTH}" \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json" \
+            -d "${PAYLOAD}")
+
+          HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+          BODY=$(echo "$RESPONSE" | head -n-1)
+          JIRA_KEY=$(echo "$BODY" | jq -r '.key // empty')
+
+          echo "Jira response (${HTTP_CODE}): ${BODY}"
+
+          if [ -n "$JIRA_KEY" ]; then
+            gh issue comment "${ISSUE_NUMBER}" \
+              --body "🔗 Jira issue created: [${JIRA_KEY}](${JIRA_BASE_URL}/browse/${JIRA_KEY})" \
+              --repo "${{ github.repository }}"
+            echo "✅ Jira issue ${JIRA_KEY} created and linked to GH#${ISSUE_NUMBER}"
+          else
+            echo "⚠️ Jira issue creation returned HTTP ${HTTP_CODE} — check JIRA_* secrets"
+          fi
+
+      - name: Transition Jira to Done (on GitHub issue closed)
+        if: github.event_name == 'issues' && github.event.action == 'closed'
+        env:
+          JIRA_BASE_URL:    ${{ secrets.JIRA_BASE_URL }}
+          JIRA_USER_EMAIL:  ${{ secrets.JIRA_USER_EMAIL }}
+          JIRA_API_TOKEN:   ${{ secrets.JIRA_API_TOKEN }}
+          JIRA_PROJECT_KEY: ${{ secrets.JIRA_PROJECT_KEY }}
+        run: |
+          set -euo pipefail
+
+          ISSUE_NUMBER="${{ github.event.issue.number }}"
+          AUTH=$(echo -n "${JIRA_USER_EMAIL}:${JIRA_API_TOKEN}" | base64)
+
+          # Search for Jira issue by GH# prefix in summary
+          SEARCH_RESP=$(curl -s \
+            "${JIRA_BASE_URL}/rest/api/3/issue/picker?query=GH%23${ISSUE_NUMBER}" \
+            -H "Authorization: Basic ${AUTH}" \
+            -H "Accept: application/json")
+
+          JIRA_KEY=$(echo "$SEARCH_RESP" | jq -r \
+            --arg prefix "GH#${ISSUE_NUMBER}:" \
+            '.sections[]?.issues[]? | select(.summaryText | startswith($prefix)) | .key' \
+            | head -1)
+
+          if [ -z "$JIRA_KEY" ]; then
+            echo "No matching Jira issue found for GH#${ISSUE_NUMBER} — skipping transition."
+            exit 0
+          fi
+
+          echo "Found Jira issue: ${JIRA_KEY}"
+
+          # Get available transitions
+          TRANSITIONS=$(curl -s \
+            "${JIRA_BASE_URL}/rest/api/3/issue/${JIRA_KEY}/transitions" \
+            -H "Authorization: Basic ${AUTH}" \
+            -H "Accept: application/json")
+
+          DONE_ID=$(echo "$TRANSITIONS" | jq -r \
+            '.transitions[] | select(.name | test("Done|Close|Resolve"; "i")) | .id' \
+            | head -1)
+
+          if [ -n "$DONE_ID" ]; then
+            curl -s -X POST \
+              "${JIRA_BASE_URL}/rest/api/3/issue/${JIRA_KEY}/transitions" \
+              -H "Authorization: Basic ${AUTH}" \
+              -H "Content-Type: application/json" \
+              -d "{\"transition\": {\"id\": \"${DONE_ID}\"}}"
+            echo "✅ Transitioned ${JIRA_KEY} to Done"
+          else
+            echo "⚠️ No 'Done' transition found for ${JIRA_KEY}"
+          fi
+
+      - name: Add label comment to Jira (on GitHub issue labeled)
+        if: github.event_name == 'issues' && github.event.action == 'labeled'
+        env:
+          JIRA_BASE_URL:    ${{ secrets.JIRA_BASE_URL }}
+          JIRA_USER_EMAIL:  ${{ secrets.JIRA_USER_EMAIL }}
+          JIRA_API_TOKEN:   ${{ secrets.JIRA_API_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          ISSUE_NUMBER="${{ github.event.issue.number }}"
+          LABEL_NAME="${{ github.event.label.name }}"
+          AUTH=$(echo -n "${JIRA_USER_EMAIL}:${JIRA_API_TOKEN}" | base64)
+
+          SEARCH_RESP=$(curl -s \
+            "${JIRA_BASE_URL}/rest/api/3/issue/picker?query=GH%23${ISSUE_NUMBER}" \
+            -H "Authorization: Basic ${AUTH}" \
+            -H "Accept: application/json")
+
+          JIRA_KEY=$(echo "$SEARCH_RESP" | jq -r \
+            --arg prefix "GH#${ISSUE_NUMBER}:" \
+            '.sections[]?.issues[]? | select(.summaryText | startswith($prefix)) | .key' \
+            | head -1)
+
+          if [ -n "$JIRA_KEY" ]; then
+            COMMENT_BODY=$(jq -n --arg label "$LABEL_NAME" \
+              '{"body":{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":("🏷️ GitHub label added: " + $label)}]}]}}')
+            curl -s -X POST \
+              "${JIRA_BASE_URL}/rest/api/3/issue/${JIRA_KEY}/comment" \
+              -H "Authorization: Basic ${AUTH}" \
+              -H "Content-Type: application/json" \
+              -d "$COMMENT_BODY"
+            echo "✅ Label comment added to ${JIRA_KEY}"
+          fi
