@@ -11,7 +11,7 @@
 #   gh      → GitHub CLI  (https://cli.github.com)
 #   jq      → JSON parser (sudo apt install jq)
 #   aider   → pip install aider-chat        (for --aider mode)
-#   cline   → npm install -g @anthropic-ai/cline  (for --cline mode)
+#   cline   → npm install -g cline  (for --cline mode)
 #
 # SECRETS (set as env vars or in a .env file):
 #   GITHUB_TOKEN       → gh auth token (gh auth login handles this)
@@ -151,7 +151,7 @@ run_aider() {
 run_cline() {
   if ! command -v cline &>/dev/null; then
     echo -e "${YELLOW}cline CLI not found. Trying npx...${RESET}"
-    CLINE_CMD="npx @anthropic-ai/cline"
+    CLINE_CMD="npx cline"
   else
     CLINE_CMD="cline"
   fi

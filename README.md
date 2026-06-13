@@ -75,7 +75,8 @@ sudo apt install jq
 pip install aider-chat
 
 # Cline (optional, uses Anthropic API)
-npm install -g @anthropic-ai/cline
+npm install -g cline
+# The published Cline CLI package name is `cline`.
 ```
 
 ### Auth
