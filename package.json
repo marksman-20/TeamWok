@@ -1,6 +1,9 @@
 {
   "name": "teamwok-bridge-api",
   "version": "1.0.0",
+  "bugs": {
+    "url": "https://github.com/marksman-20/TeamWok/issues"
+  },
   "description": "Integration bridge between GitHub, Slack and YouTrack",
   "main": "server.js",
   "type": "module",
